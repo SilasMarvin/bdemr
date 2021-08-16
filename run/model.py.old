@@ -1,0 +1,114 @@
+import jax.numpy as jnp
+import haiku as hk
+import optax
+import jax
+import sys
+
+
+"""
+A standard RL agent with act and update methods
+It utilizes a online and target network as did the reference paper
+"""
+class Model:
+    def __init__(self, input_size, output_size):
+        self.input_size = input_size
+        self.output_size = output_size
+        self.learning_rate = 0.01
+        self.epsilon = 1
+        self.epsilon_decay = 0.9994
+        self.min_epsilon = 0.1
+        self.gamma = 0.99
+        self.update_step = 0 
+        self.copy_weights_every = 20 
+        self.rng = jax.random.PRNGKey(42)
+
+        def make_network():
+            mlp = hk.DeepRNN([
+              hk.Linear(300), jax.nn.relu,
+              hk.Linear(100), jax.nn.relu,
+              hk.Linear(output_size),
+            ])
+            return mlp
+
+        def __get_initial_state():
+            core = make_network()
+            return core.initial_state(None)
+        self._get_initial_state = hk.transform(__get_initial_state)
+        self._get_initial_state_params = self._get_initial_state.init(self.rng)
+
+        def forward(x, state):
+            core = make_network()
+            return core(x, state)
+
+        self.ml_state = self.get_initial_state()
+        self.ml = hk.transform(forward)
+        self.online_params = self.ml.init(self.rng, jnp.ones((self.input_size,)), self.ml_state)
+        self.target_params = self.online_params
+        self.opt = optax.adam(self.learning_rate)
+        self.opt_state = self.opt.init(self.online_params)
+
+        #Computes the loss in refernce to paper as defined in Equation 4
+        def loss(online_params, updated_q_values, state_mem, action_masks, graph_value_mem, ml_state_mem):
+            #core = make_network()
+            #q_values = hk.dynamic_unroll(core, state_mem, ml_state_mem, time_major=True)[0]
+            q_values = self.ml.apply(online_params, self.rng, state_mem, ml_state_mem)[0]
+            q_values = jnp.amax(jnp.multiply(q_values, action_masks), axis=1)
+            #return (jnp.sum(jnp.square(jnp.subtract(updated_q_values, q_values) + 0.1 * jnp.square(jnp.subtract(graph_value_mem, q_values))))) / jnp.shape(updated_q_values)[0]
+            return (jnp.sum(jnp.square(jnp.subtract(updated_q_values, q_values)))) / jnp.shape(updated_q_values)[0]
+
+        #Get updated q values
+        def get_updated_q_values(reward_mem, next_state_mem, done_mem, ml_state_mem):
+            core = make_network()
+            future_rewards = hk.dynamic_unroll(core, next_state_mem, ml_state_mem, time_major=True)[0]
+            updated_q_values = reward_mem + self.gamma * jnp.amax(future_rewards, axis=1)
+            updated_q_values = updated_q_values * (1 - done_mem)
+            return updated_q_values
+        self._get_updated_q_values = hk.transform(jax.jit(get_updated_q_values))
+
+        #Updates the network
+        def update(online_params, opt_state, state_mem, action_mem, reward_mem, next_state_mem, done_mem, graph_value_mem, ml_state_mem, updated_q_values):
+            action_masks = jax.nn.one_hot(action_mem, self.output_size)
+            """
+            _, loss_fn = hk.without_apply_rng(hk.transform(loss))
+            grads = jax.grad(loss_fn)(online_params, updated_q_values, state_mem, action_masks, graph_value_mem, ml_state_mem)
+            """
+            grads = jax.grad(loss)(online_params, updated_q_values, state_mem, action_masks, graph_value_mem, ml_state_mem)
+            updates, new_opt_state = self.opt.update(grads, opt_state)
+            return optax.apply_updates(online_params, updates), new_opt_state
+        self._update = jax.jit(update)
+
+
+    #Updates the agent's online network and potentially copies the online networks weights to the target network
+    def update(self, batch):
+        state_mem, action_mem, reward_mem, next_state_mem, done_mem, graph_value_mem, ml_state_mem = batch
+        updated_q_values = self._get_updated_q_values.apply(self.target_params, self.rng, reward_mem, next_state_mem, done_mem, ml_state_mem)
+        self.online_params, self.opt_state = self._update(self.online_params, self.opt_state, state_mem, action_mem, reward_mem, next_state_mem, done_mem, graph_value_mem, ml_state_mem, updated_q_values)
+        if self.update_step % self.copy_weights_every == 0:
+            self.target_params = self.online_params
+        self.update_step += 1
+
+
+    #Gets an action from the agent
+    def act(self, x):
+        _, self.rng = jax.random.split(self.rng)
+        self.epsilon = max(self.epsilon * self.epsilon_decay, self.min_epsilon)
+        if jax.random.uniform(self.rng, (1,), minval=0.0, maxval=1.0) > self.epsilon:
+            prediction, self.ml_state = self.ml.apply(self.online_params, self.rng, x, self.ml_state)
+            return jnp.argmax(prediction)
+        else:
+            return jax.random.randint(self.rng, (1,), minval=0, maxval=self.output_size)[0]
+
+
+    #Gets the initial ml state
+    def get_initial_state(self):
+        return self._get_initial_state.apply(self._get_initial_state_params, None)
+
+
+    #Gets the current ml state
+    def get_current_state(self):
+        return self.ml_state
+
+
+    #Sets the state back to the initial state
+    def episode_end(self):
+        self.ml_state = self.get_initial_state()
