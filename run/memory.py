@@ -15,95 +15,83 @@ class Memory:
     def __init__(self, env, input_size):
         self.rng = jax.random.PRNGKey(42)
         self.size = 0
-        self.last_combined = self.size
         self.max_size = 10000
+        self.gamma = 0.97
 
-        self.state_mem = jnp.zeros((self.max_size,input_size))
-        self.action_mem = jnp.zeros((self.max_size,2))
-        self.reward_mem = jnp.zeros((self.max_size, 1))
-        self.state_next_mem = jnp.zeros((self.max_size, input_size))
-        self.done_mem = jnp.zeros((self.max_size, 1))
-        self.ml_state_mem = jnp.zeros((self.max_size, 300))
-        self.ml_state_next_mem = jnp.zeros((self.max_size, 300))
+        self.r_keys = jnp.zeros((1,6))
+        self.r_states = jnp.zeros((1, 100))
 
-        """
-        self.state_mem = jnp.zeros((0,input_size))
-        self.action_mem = jnp.zeros((0,2))
-        self.reward_mem = jnp.zeros((0, 1))
-        self.state_next_mem = jnp.zeros((0, input_size))
-        self.done_mem = jnp.zeros((0, 1))
-        self.ml_state_mem = jnp.zeros((0, 300))
-        self.ml_state_next_mem = jnp.zeros((0, 300))
-        self.t_size = 0
-        self.t_state_mem = np.zeros((50,input_size))
-        self.t_action_mem = np.zeros((50,2))
-        self.t_reward_mem = np.zeros((50, 1))
-        self.t_state_next_mem = np.zeros((50, input_size))
-        self.t_done_mem = np.zeros((50, 1))
-        self.t_ml_state_mem = np.zeros((50, 300))
-        self.t_ml_state_next_mem = np.zeros((50, 300))
-        """
+        self.t_state_mem = []
+        self.t_action_mem = []
+        self.t_log_prob_mem = []
+        self.t_reward_mem = []
+        self.t_done_mem = []
+        self.t_ml_cell_states_mem = []
+        self.t_Rts_mem = []
 
 
     #Add the state, action, reward, state_next and done to the current episode memory
-    def add(self, state, action, reward, state_next, done, ml_state, ml_state_next):
-        self.state_mem = self.state_mem.at[self.size].set(state)
-        self.action_mem = self.action_mem.at[self.size].set(action)
-        self.reward_mem = self.reward_mem.at[self.size].set(reward)
-        self.state_next_mem = self.state_next_mem.at[self.size].set(state_next)
-        self.done_mem = self.done_mem.at[self.size].set(done)
-        self.ml_state_mem = self.ml_state_mem.at[self.size].set(ml_state)
-        self.ml_state_next_mem = self.ml_state_next_mem.at[self.size].set(ml_state_next)
-        self.size += 1
-        """
-        self.t_state_mem[self.t_size] = state
-        self.t_action_mem[self.t_size] = action
-        self.t_reward_mem[self.t_size] = reward
-        self.t_state_next_mem[self.t_size] = state_next
-        self.t_done_mem[self.t_size] = done 
-        self.t_ml_state_mem[self.t_size] = ml_state
-        self.t_ml_state_next_mem[self.t_size] = ml_state_next 
-        self.t_size += 1
-        if self.t_size == 50:
-            self.state_mem = jnp.concatenate([self.state_mem, jnp.array(self.t_state_mem)], axis=0) 
-            self.action_mem = jnp.concatenate([self.action_mem, jnp.array(self.t_action_mem)], axis=0) 
-            self.reward_mem = jnp.concatenate([self.reward_mem, jnp.array(self.t_reward_mem)], axis=0) 
-            self.state_next_mem = jnp.concatenate([self.state_next_mem, jnp.array(self.t_state_next_mem)], axis=0) 
-            self.done_mem = jnp.concatenate([self.done_mem, jnp.array(self.t_done_mem)], axis=0) 
-            self.ml_state_mem = jnp.concatenate([self.ml_state_mem, jnp.array(self.t_ml_state_mem)], axis=0) 
-            self.ml_state_next_mem = jnp.concatenate([self.ml_state_next_mem, jnp.array(self.t_ml_state_next_mem)], axis=0) 
-            self.size += self.t_size
-            self.t_size = 0
-        """
+    def add(self, state, action, log_prob, reward, ml_state):
+        self.t_state_mem.append(state)
+        self.t_action_mem.append(action)
+        self.t_log_prob_mem.append(log_prob)
+        self.t_reward_mem.append(reward) 
+        self.t_ml_cell_states_mem.append(ml_state)
 
 
-    #Gets the lstm for the associated state
+    #Computes the Rts
+    def compute_rewards_to_go(self):
+        Rt = 0
+        for t in reversed(range(len(self.t_reward_mem))):
+            Rt = self.t_reward_mem[t] + self.gamma * Rt
+            self.t_Rts_mem.insert(0, Rt)
+
+
+    #Gets all lstm states and state_mem
     def get_reinstatement_states(self):
-        return self.state_mem, self.ml_state_mem
+        return self.r_keys, self.r_states
 
 
-    def sample_batch(self, batch_size, sequence_size):
-        def sample_batch_sequence(size, rand_index, state_mem, action_mem, reward_mem, state_next_mem, done_mem, ml_state_mem, ml_state_next_mem):
-            return (jax.lax.dynamic_slice(state_mem, (rand_index,0), (size,4)),
-            jnp.reshape(jax.lax.dynamic_slice(action_mem, (rand_index,0), (size,1)), (size,)),
-            jnp.reshape(jax.lax.dynamic_slice(reward_mem, (rand_index,0), (size,1)), (size,)),
-            jax.lax.dynamic_slice(state_next_mem, (rand_index,0), (size,4)),
-            jnp.reshape(jax.lax.dynamic_slice(done_mem, (rand_index,0), (size,1)), (size,)),
-            jnp.zeros((batch_size,)),
-            jax.lax.dynamic_slice(ml_state_mem, (rand_index,0), (size,300)),
-            jax.lax.dynamic_slice(ml_state_next_mem, (rand_index,0), (size,300)),
-            jax.lax.dynamic_slice(ml_state_mem, (rand_index,0), (size,300)),
-            jax.lax.dynamic_slice(ml_state_next_mem, (rand_index,0), (size,300)))
-        if sequence_size > self.size:
-            return False
-        self.rng, rng_key =  jax.random.split(self.rng)
-        return jax.vmap(sample_batch_sequence, in_axes=(None,0,None,None,None,None,None,None,None))(
-                sequence_size, 
-                jax.random.randint(rng_key, (batch_size,), minval=0, maxval=self.size - sequence_size - 1), 
-                self.state_mem, 
-                self.action_mem, 
-                self.reward_mem, 
-                self.state_next_mem, 
-                self.done_mem, 
-                self.ml_state_mem, 
-                self.ml_state_next_mem)
+    #Gets the last episode sequence
+    def get_last_episode(self):
+        self.compute_rewards_to_go()
+        """
+        rand_index = 0
+        if max_size < len(self.t_state_mem):
+            self.rng, rng_key = jax.random.split(self.rng)
+            rand_index = jax.random.randint(rng_key, (1,), 0, len(self.t_state_mem) - max_size + 2)[0]
+        return (
+            jnp.array(self.t_state_mem[rand_index:rand_index + max_size]), 
+            jnp.array(self.t_action_mem[rand_index:rand_index + max_size]), 
+            jnp.array(self.t_log_prob_mem[rand_index:rand_index + max_size]), 
+            jnp.array(self.t_reward_mem[rand_index:rand_index + max_size]),
+            jnp.array(self.t_Rts_mem[rand_index:rand_index + max_size]))
+        """
+        self.t_Rts_mem = jnp.array(self.t_Rts_mem)
+        #self.t_Rts_mem = (self.t_Rts_mem - jnp.mean(self.t_Rts_mem)) / (jnp.std(self.t_Rts_mem) + 1e-10)
+        self.t_Rts_mem = self.t_Rts_mem / 100
+        self.t_state_mem = jnp.array(self.t_state_mem)
+        self.t_action_mem = jnp.array(self.t_action_mem)
+        return (
+            self.t_state_mem,
+            self.t_action_mem,
+            jnp.array(self.t_log_prob_mem), 
+            jnp.array(self.t_reward_mem),
+            self.t_Rts_mem,
+            self.t_ml_cell_states_mem)
+
+
+    #Clears the memory
+    def clear_episode_memory(self):
+        """
+        keys = jnp.concatenate([self.t_state_mem, jnp.expand_dims(self.t_action_mem, axis=1), jnp.expand_dims(self.t_Rts_mem, axis=1)], axis=1)
+        self.r_keys = jnp.concatenate([self.r_keys, keys])[-1000:]
+        self.r_states = jnp.concatenate([self.r_states, jnp.array(self.t_ml_cell_states_mem)])[-1000:]
+        """
+
+        self.t_state_mem = []
+        self.t_action_mem = []
+        self.t_log_prob_mem = []
+        self.t_reward_mem = []
+        self.t_ml_cell_states_mem = []
+        self.t_Rts_mem = []

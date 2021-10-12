@@ -20,24 +20,22 @@ if __name__ == "__main__":
     ml = model.Model(input_size=4, output_size=2)
     start_time = time.time()
 
-    for i in range(2000): 
+    for i in range(1000): 
         state = jnp.array(env.reset())
         done = False
         step = 0
         while not done:
-            ml_state = ml.get_current_state()
-            action = int(ml.act(state, mem.get_reinstatement_states()))
+            ml_cell_states = ml.get_current_cell_states()
+            action, log_prob = ml.act(state, mem.get_reinstatement_states())
             next_state, reward, done, _ = env.step(action)
-            next_state = jnp.array(next_state)
-            mem.add(state, action, reward, next_state, done, ml_state, ml.get_current_state())
-            state = next_state
+            if done and not step == 199:
+                reward = -5
+            mem.add(state, action, log_prob, reward, ml_cell_states)
+            state = jnp.array(next_state)
             step += 1
         print(f"EPISODE: {i}  MADE TO STEP: {step}  EPSILON: {ml.epsilon}  RUNNING TIME: {time.time() - start_time}")
 
-        #ml.episode_end()
-
-        batch = mem.sample_batch(64, 16)
-        if type(batch) == type(False) and batch == False:
-            continue
+        batch = mem.get_last_episode()
+        mem.clear_episode_memory()
         mem_states = mem.get_reinstatement_states()
         ml.update(batch, mem_states)
