@@ -59,9 +59,11 @@ Subclasses the DeepRNN and augments it to follow the architecture described in "
 """
 class CDeepRNN():
     def __init__(self):
-        self.layer1 = CLSTM(100)
-        #self.layer1 = hk.Linear(100)
-        self.layer2 = hk.Linear(50)
+        #self.layer1 = CLSTM(100)
+        #self.layer1 = hk.LSTM(100)
+        self.layer1 = hk.Linear(100)
+        #self.layer2 = hk.Linear(50)
+        self.layer2 = hk.LSTM(50)
         self.layer3_1 = hk.Linear(20)
         self.layer3_2 = hk.Linear(10)
         self.layer4_1 = hk.Linear(2)
@@ -86,14 +88,20 @@ class CDeepRNN():
         """
         
         #Use if layer one is an LSTM and not using mem layers
-        out1, next_state = self.layer1(inputs, state[0], reinstatement_states[0])
-        next_states.append(next_state)
+        #out1, next_state = self.layer1(inputs, state[0], reinstatement_states[0])
+        #out1, next_state = self.layer1(inputs, state[0])
+        #next_states.append(next_state)
 
         #Use if layer one is linear
-        #out1 = self.layer1(inputs)
+        out1 = self.layer1(inputs)
 
         out1 = jax.nn.relu(out1)
-        out2 = jax.nn.relu(self.layer2(out1))
+
+        #out2 = jax.nn.relu(self.layer2(out1))
+        out2, next_state = self.layer2(out1, state[0])
+        next_states.append(next_state)
+
+        out2 = jax.nn.relu(out2) 
         policy_dist = jax.nn.softmax(self.layer4_1(jax.nn.relu(self.layer3_1(out2))))
         value = self.layer4_2(jax.nn.relu(self.layer3_2(out2)))
         return policy_dist, value, tuple(next_states)
@@ -101,7 +109,7 @@ class CDeepRNN():
 
     def initial_state(self, batch_size: Optional[int]):
         #return tuple() #Only use if layer 1 is  linear
-        return tuple([self.layer1.initial_state(batch_size)])
+        return tuple([self.layer2.initial_state(batch_size)])
 
 
 
@@ -119,7 +127,6 @@ class Model:
         self.epsilon_decay = 0.9993
         self.ppo_epsilon = 0.2
         self.min_epsilon = 0.1
-        self.gamma = 0.99
         self.update_step = 0 
 
         def make_network():
@@ -146,7 +153,7 @@ class Model:
         #Unrolls the network
         def unroll(state_mem, rnn_start_state, reinstatement_state_keys, reinstatement_states):
             core = make_network()
-            (probs, V), _ =  dynamic_unroll(core, state_mem, rnn_start_state, reinstatement_state_keys, reinstatement_states)
+            (probs, V), _ = dynamic_unroll(core, state_mem, rnn_start_state, reinstatement_state_keys, reinstatement_states)
             return probs, V
         _, self._unroll = hk.without_apply_rng(hk.transform(unroll))
         self._unroll = jax.jit(self._unroll)
@@ -163,7 +170,7 @@ class Model:
             actor_loss = jnp.mean(-jnp.fmin(s1, s2))
             critic_loss = jnp.mean(jnp.square(rts_mem - V))
             #entropy = - jnp.sum(probs * log_probs)
-            return actor_loss + critic_loss 
+            return actor_loss + critic_loss
         _, self._loss = hk.without_apply_rng(hk.transform(loss))
         self._loss = jax.jit(self._loss)
 
@@ -174,13 +181,13 @@ class Model:
         state_mem, action_mem, log_probs_mem, reward_mem, rts_mem, rnn_states = batch
         reinstatement_state_keys, reinstatement_states = reinstatement_states
 
-        batch_probs, values = self._unroll(self.ac_params, state_mem, self.ml_state, reinstatement_state_keys, reinstatement_states)
+        batch_probs, values = self._unroll(self.ac_params, state_mem, self.get_initial_state(), reinstatement_state_keys, reinstatement_states)
         values = jnp.squeeze(values, 1)
         #rts_mem = (rts_mem - jnp.mean(rts_mem)) / (jnp.std(rts_mem) + 1e-10) Already normalizing in the memory
         advantages = rts_mem - values 
 
         for _ in range(3):
-            grads = jax.grad(self._loss)(self.ac_params, state_mem, rts_mem, action_mem, log_probs_mem, advantages, self.ml_state, reinstatement_state_keys, reinstatement_states)
+            grads = jax.grad(self._loss)(self.ac_params, state_mem, rts_mem, action_mem, log_probs_mem, advantages, self.get_initial_state(), reinstatement_state_keys, reinstatement_states)
             updates, self.opt_state = self.opt.update(grads, self.opt_state)
             self.ac_params = optax.apply_updates(self.ac_params, updates)
 
@@ -214,6 +221,16 @@ class Model:
         for x in self.ml_state:
             state += list(x.cell)
         return jnp.array(state)
+
+
+    #Gets the current state
+    def get_current_state(self):
+        return self.ml_state
+
+
+    #Resets the state to the initial state
+    def reset_state(self):
+        self.ml_state = self.get_initial_state()
 
 
     #Saves the model

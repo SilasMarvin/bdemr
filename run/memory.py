@@ -27,16 +27,18 @@ class Memory:
         self.t_reward_mem = []
         self.t_done_mem = []
         self.t_ml_cell_states_mem = []
+        self.t_ml_rnn_states_mem = []
         self.t_Rts_mem = []
 
 
     #Add the state, action, reward, state_next and done to the current episode memory
-    def add(self, state, action, log_prob, reward, ml_state):
+    def add(self, state, action, log_prob, reward, ml_cell_state, ml_rnn_state):
         self.t_state_mem.append(state)
         self.t_action_mem.append(action)
         self.t_log_prob_mem.append(log_prob)
         self.t_reward_mem.append(reward) 
-        self.t_ml_cell_states_mem.append(ml_state)
+        self.t_ml_cell_states_mem.append(ml_cell_state)
+        self.t_ml_rnn_states_mem.append(ml_rnn_state)
 
 
     #Computes the Rts
@@ -78,7 +80,7 @@ class Memory:
             jnp.array(self.t_log_prob_mem), 
             jnp.array(self.t_reward_mem),
             self.t_Rts_mem,
-            self.t_ml_cell_states_mem)
+            self.t_ml_rnn_states_mem)
 
 
     #Clears the memory
@@ -94,4 +96,5 @@ class Memory:
         self.t_log_prob_mem = []
         self.t_reward_mem = []
         self.t_ml_cell_states_mem = []
+        self.t_ml_rnn_states_mem = []
         self.t_Rts_mem = []
