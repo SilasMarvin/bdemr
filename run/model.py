@@ -2,6 +2,7 @@ from typing import Any, NamedTuple, Optional, Sequence, Tuple, Union
 from haiku._src import base
 from haiku._src import stateful
 
+import math
 import jax.numpy as jnp
 import numpy as np
 import haiku as hk
@@ -19,7 +20,7 @@ A copy and pase rewrite with added reinstatment state of hk dyanmic_unroll
 def dynamic_unroll(core, input_sequence, initial_state, reinstatement_state_keys, reinstatement_states, time_major=True, reverse=False):
     scan = stateful.scan if base.inside_transform() else jax.lax.scan
     def scan_f(prev_state, inputs):
-        policy_dist, value, next_state = core(inputs[0], prev_state, reinstatement_state_keys, reinstatement_states)
+        policy_dist, value, next_state, _ = core(inputs[0], prev_state, reinstatement_state_keys, reinstatement_states)
         return next_state, (policy_dist, value)
     final_state, outputs = scan(
         scan_f,
@@ -58,15 +59,16 @@ class CLSTM(hk.LSTM):
 Subclasses the DeepRNN and augments it to follow the architecture described in "Been There, Done That"
 """
 class CDeepRNN():
-    def __init__(self):
+    def __init__(self, output_size):
         #self.layer1 = CLSTM(100)
         #self.layer1 = hk.LSTM(100)
         self.layer1 = hk.Linear(100)
         #self.layer2 = hk.Linear(50)
         self.layer2 = hk.LSTM(50)
-        self.layer3_1 = hk.Linear(20)
-        self.layer3_2 = hk.Linear(10)
-        self.layer4_1 = hk.Linear(2)
+        self.layer2_5 = hk.LSTM(50)
+        self.layer3_1 = hk.Linear(25)
+        self.layer3_2 = hk.Linear(25)
+        self.layer4_1 = hk.Linear(output_size)
         self.layer4_2 = hk.Linear(1)
 
         """
@@ -93,22 +95,34 @@ class CDeepRNN():
         #next_states.append(next_state)
 
         #Use if layer one is linear
-        out1 = self.layer1(inputs)
+        out1_preactivation = self.layer1(inputs)
 
-        out1 = jax.nn.relu(out1)
+        out1 = jax.nn.leaky_relu(out1_preactivation)
 
-        #out2 = jax.nn.relu(self.layer2(out1))
-        out2, next_state = self.layer2(out1, state[0])
+        #out2 = self.layer2(out1)
+        out2_preactivation, next_state = self.layer2(out1, state[0])
         next_states.append(next_state)
+        out2 = jax.nn.leaky_relu(out2_preactivation) 
 
-        out2 = jax.nn.relu(out2) 
-        policy_dist = jax.nn.softmax(self.layer4_1(jax.nn.relu(self.layer3_1(out2))))
-        value = self.layer4_2(jax.nn.relu(self.layer3_2(out2)))
-        return policy_dist, value, tuple(next_states)
+        """
+        out2_preactivation, next_state = self.layer2_5(out2, state[1])
+        next_states.append(next_state)
+        out2 = jax.nn.relu(out2_preactivation) 
+        """
+
+        to_softmax = self.layer4_1(jax.nn.relu(self.layer3_1(out2)))
+        #to_softmax = (to_softmax - jnp.min(to_softmax)) / (jnp.max(to_softmax) - jnp.min(to_softmax))
+        #to_softmax = (to_softmax - jnp.mean(to_softmax)) / jnp.std(to_softmax) 
+        #to_softmax = to_softmax - jnp.min(to_softmax)
+        policy_dist = jax.nn.softmax(to_softmax)
+        policy_dist += 1E-4
+        value = self.layer4_2(jax.nn.leaky_relu(self.layer3_2(out2)))
+        return policy_dist, value, tuple(next_states), to_softmax 
 
 
     def initial_state(self, batch_size: Optional[int]):
-        #return tuple() #Only use if layer 1 is  linear
+        #return tuple() #Only use if layer 2 is  linear
+        #return tuple([self.layer2.initial_state(batch_size), self.layer2_5.initial_state(batch_size)])
         return tuple([self.layer2.initial_state(batch_size)])
 
 
@@ -122,15 +136,16 @@ class Model:
         self.rng = jax.random.PRNGKey(42)
         self.input_size = input_size
         self.output_size = output_size
-        self.learning_rate = 0.01
+        self.learning_rate = 0.001
         self.epsilon = 1
-        self.epsilon_decay = 0.9993
+        #self.epsilon_decay = 0.99998
+        self.epsilon_decay = 0.999998
         self.ppo_epsilon = 0.2
         self.min_epsilon = 0.1
         self.update_step = 0 
 
         def make_network():
-            mlp = CDeepRNN()
+            mlp = CDeepRNN(self.output_size)
             return mlp
 
         def __get_initial_state():
@@ -147,7 +162,7 @@ class Model:
         self.ml = hk.transform(forward)
         self.ac_params = self.ml.init(self.rng, jnp.ones((self.input_size,)), self.ml_state, jnp.zeros((1,6)), jnp.zeros((1,100)))
         self.ml_apply = jax.jit(self.ml.apply)
-        self.opt = optax.chain(optax.clip_by_global_norm(2.0), optax.adam(self.learning_rate))
+        self.opt = optax.chain(optax.clip_by_global_norm(0.2), optax.adamw(self.learning_rate))
         self.opt_state = self.opt.init(self.ac_params)
 
         #Unrolls the network
@@ -186,10 +201,16 @@ class Model:
         #rts_mem = (rts_mem - jnp.mean(rts_mem)) / (jnp.std(rts_mem) + 1e-10) Already normalizing in the memory
         advantages = rts_mem - values 
 
+        """
         for _ in range(3):
             grads = jax.grad(self._loss)(self.ac_params, state_mem, rts_mem, action_mem, log_probs_mem, advantages, self.get_initial_state(), reinstatement_state_keys, reinstatement_states)
             updates, self.opt_state = self.opt.update(grads, self.opt_state)
             self.ac_params = optax.apply_updates(self.ac_params, updates)
+        """
+        grads = jax.grad(self._loss)(self.ac_params, state_mem, rts_mem, action_mem, log_probs_mem, advantages, self.get_initial_state(), reinstatement_state_keys, reinstatement_states)
+        updates, self.opt_state = self.opt.update(grads, self.opt_state, self.ac_params)
+        self.ac_params = optax.apply_updates(self.ac_params, updates)
+
 
         if self.update_step % 20 == 0:
             self.save()
@@ -201,12 +222,15 @@ class Model:
         self.rng, rng_key = jax.random.split(self.rng)
         self.epsilon = max(self.epsilon * self.epsilon_decay, self.min_epsilon)
         reinstatement_keys, reinstatement_states = reinstatement_states
-        prediction, values, self.ml_state = self.ml_apply(self.ac_params, rng_key, x, self.ml_state, reinstatement_keys, reinstatement_states)
+        prediction, values, self.ml_state, r_var = self.ml_apply(self.ac_params, rng_key, x, self.ml_state, reinstatement_keys, reinstatement_states)
         if jax.random.uniform(rng_key, (1,), minval=0.0, maxval=1.0) > self.epsilon:
-            action = jax.random.choice(rng_key, jnp.arange(2), (), p=prediction)
+            action = jax.random.choice(rng_key, jnp.arange(self.output_size), (), p=prediction)
         else:
             action = jax.random.randint(rng_key, (1,), minval=0, maxval=self.output_size)[0]
         log_prob = jnp.log(prediction[action])
+        if(math.isnan(log_prob)):
+            print(action, x, prediction, values)
+            sys.exit(0)
         return int(action), log_prob
 
 

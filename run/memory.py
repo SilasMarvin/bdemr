@@ -71,7 +71,8 @@ class Memory:
         """
         self.t_Rts_mem = jnp.array(self.t_Rts_mem)
         #self.t_Rts_mem = (self.t_Rts_mem - jnp.mean(self.t_Rts_mem)) / (jnp.std(self.t_Rts_mem) + 1e-10)
-        self.t_Rts_mem = self.t_Rts_mem / 100
+        self.t_Rts_mem = self.t_Rts_mem / 10
+
         self.t_state_mem = jnp.array(self.t_state_mem)
         self.t_action_mem = jnp.array(self.t_action_mem)
         return (
