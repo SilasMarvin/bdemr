@@ -18,8 +18,9 @@ class Memory:
         self.max_size = 10000
         self.gamma = 0.97
 
-        self.r_keys = jnp.zeros((1,6))
-        self.r_states = jnp.zeros((1, 100))
+        #self.r_keys = jnp.zeros((1, 13))
+        self.r_keys = jnp.zeros((1, 8))
+        self.r_states = jnp.zeros((1, 50))
 
         self.t_state_mem = []
         self.t_action_mem = []
@@ -86,11 +87,9 @@ class Memory:
 
     #Clears the memory
     def clear_episode_memory(self):
-        """
         keys = jnp.concatenate([self.t_state_mem, jnp.expand_dims(self.t_action_mem, axis=1), jnp.expand_dims(self.t_Rts_mem, axis=1)], axis=1)
-        self.r_keys = jnp.concatenate([self.r_keys, keys])[-1000:]
-        self.r_states = jnp.concatenate([self.r_states, jnp.array(self.t_ml_cell_states_mem)])[-1000:]
-        """
+        self.r_keys = jnp.concatenate([self.r_keys, keys])[-25000:]
+        self.r_states = jnp.concatenate([self.r_states, jnp.array(self.t_ml_cell_states_mem)])[-25000:]
 
         self.t_state_mem = []
         self.t_action_mem = []

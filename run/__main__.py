@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 
 
 train_batch_size = 16 
-arm_count = 10 
+arm_count = 5 
 
 
 """

@@ -64,30 +64,29 @@ class CDeepRNN():
         #self.layer1 = hk.LSTM(100)
         self.layer1 = hk.Linear(100)
         #self.layer2 = hk.Linear(50)
-        self.layer2 = hk.LSTM(50)
-        self.layer2_5 = hk.LSTM(50)
+        #self.layer2 = hk.LSTM(50)
+        self.layer2 = CLSTM(50)
+        #self.layer2_5 = hk.LSTM(50)
         self.layer3_1 = hk.Linear(25)
         self.layer3_2 = hk.Linear(25)
         self.layer4_1 = hk.Linear(output_size)
         self.layer4_2 = hk.Linear(1)
 
-        """
         self.mem_layer_1 = hk.Linear(50, name="mem_1")
+        self.mem_layer_1_5 = hk.Linear(50, name="mem_1_5")
         self.mem_layer_2 = hk.Linear(25, name="mem_2")
         self.mem_layer_3 = hk.Linear(1, name="mem_3")
-        """
 
 
     def __call__(self, inputs, state, reinstatement_state_keys, reinstatement_states):
         next_states = []
 
-        """
         tiled_inputs = jnp.tile(inputs, (jnp.shape(reinstatement_state_keys)[0], 1)) 
         reinstatement_state_key_inputs = jnp.concatenate([reinstatement_state_keys, tiled_inputs], axis=1)
-        mem_out1 = jax.nn.tanh(self.mem_layer_3(jax.nn.relu(self.mem_layer_2(jax.nn.relu(self.mem_layer_1(reinstatement_state_key_inputs))))))
+        mem_out1 = jax.nn.tanh(self.mem_layer_3(jax.nn.leaky_relu(self.mem_layer_2(jax.nn.leaky_relu(self.mem_layer_1_5(jax.nn.leaky_relu(self.mem_layer_1(reinstatement_state_key_inputs))))))))
         r_state0 = jnp.sum(mem_out1 * reinstatement_states, axis=0)
-        out1, next_state = self.layer1(inputs, state[0], r_state0)
-        """
+
+        #out1, next_state = self.layer1(inputs, state[0], r_state0)
         
         #Use if layer one is an LSTM and not using mem layers
         #out1, next_state = self.layer1(inputs, state[0], reinstatement_states[0])
@@ -96,11 +95,11 @@ class CDeepRNN():
 
         #Use if layer one is linear
         out1_preactivation = self.layer1(inputs)
-
         out1 = jax.nn.leaky_relu(out1_preactivation)
 
         #out2 = self.layer2(out1)
-        out2_preactivation, next_state = self.layer2(out1, state[0])
+        #out2_preactivation, next_state = self.layer2(out1, state[0])
+        out2_preactivation, next_state = self.layer2(out1, state[0], r_state0)
         next_states.append(next_state)
         out2 = jax.nn.leaky_relu(out2_preactivation) 
 
@@ -160,7 +159,8 @@ class Model:
 
         self.ml_state = self.get_initial_state()
         self.ml = hk.transform(forward)
-        self.ac_params = self.ml.init(self.rng, jnp.ones((self.input_size,)), self.ml_state, jnp.zeros((1,6)), jnp.zeros((1,100)))
+        #self.ac_params = self.ml.init(self.rng, jnp.ones((self.input_size,)), self.ml_state, jnp.zeros((1,13)), jnp.zeros((1,50)))
+        self.ac_params = self.ml.init(self.rng, jnp.ones((self.input_size,)), self.ml_state, jnp.zeros((1,8)), jnp.zeros((1,50)))
         self.ml_apply = jax.jit(self.ml.apply)
         self.opt = optax.chain(optax.clip_by_global_norm(0.2), optax.adamw(self.learning_rate))
         self.opt_state = self.opt.init(self.ac_params)
